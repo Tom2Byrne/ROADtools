@@ -701,6 +701,10 @@ def getargs(gather_parser):
                                help='Tenant ID to gather, if this info is not stored in the token')
     gather_parser.add_argument('-ua', '--user-agent', action='store',
                                 help='Custom user agent to use. By default aiohttp default user agent is used, and python-requests is used for token renewal')
+    gather_parser.add_argument('-p', '--proxy', action='store',
+                              help='Proxy server address (e.g., http://proxy.example.com:8080)')
+    gather_parser.add_argument('--proxy-type', action='store', default='http',
+                              help='Proxy type (http, https, socks5, etc.)')
 
 def main(args=None):
     global token, headers, dburl, urlcounter

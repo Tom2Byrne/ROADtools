@@ -4,19 +4,26 @@ import os
 import importlib
 from roadtools.roadlib.auth import Authentication
 from roadtools.roadrecon.gather import getargs as getgatherargs
-RR_HELP = '''ROADrecon - The Azure AD exploration tool.
+# from roadtools.roadrecon.ibiza_gather import getargs as getenumargs
+
+RR_HELP = r'''
+ROADrecon - The Entra ID exploration tool.
+
 By @_dirkjan - dirkjanm.io
+Re-built by @Thomasbyrne__
 
 To get started, use one of the subcommands. Each command has a help feature (roadrecon <command> -h).
 
-1. Authenticate to Azure AD
+1. Authenticate to Entra ID
 roadrecon auth <options>
 
 2. Gather all information
-roadrecon gather <options>
+roadrecon gather <options> [OLD]
+roadrecon gather --ibiza <options> [NEW]
 
 3. Explore the data or export it to a specific format using a plugin
 roadrecon gui
+roadrecon gui --ibiza [NEW]
 roadrecon plugin -h
 '''
 
@@ -45,19 +52,25 @@ def main():
 
     # Construct authentication module options
     auth = Authentication()
-    auth_parser = subparsers.add_parser('auth', help='Authenticate to Azure AD')
+    auth_parser = subparsers.add_parser('auth', help='Authenticate to Entra ID')
     auth.get_sub_argparse(auth_parser, for_rr=True)
 
     # Construct gather module options (imported from gather module)
-    gather_parser = subparsers.add_parser('gather', aliases=['dump'], help='Gather Azure AD information')
+    gather_parser = subparsers.add_parser('gather', aliases=['dump'], help='Gather Entra ID information')
+    gather_parser.add_argument('--ibiza',
+                            action='store_true',
+                            help='Use the new ibiza endpoints for collection')
+    
     getgatherargs(gather_parser)
+    # enum_parser = subparsers.add_parser('enumerate', aliases=['dump'], help='Gather Entra ID information - Microsoft Graph [NEW]')
+    # getenumargs(enum_parser)
 
     # Construct GUI options
     gui_parser = subparsers.add_parser('gui', help='Launch the web-based GUI')
     gui_parser.add_argument('-d',
                             '--database',
                             action='store',
-                            help='Database file. Can be the local database name for SQLite, or an SQLAlchemy compatible URL such as postgresql+psycopg2://dirkjan@/roadtools',
+                            help='hdjfhj database name for SQLite, or an SQLAlchemy compatible URL such as postgresql+psycopg2://dirkjan@/roadtools',
                             default='roadrecon.db')
     gui_parser.add_argument('--debug',
                             action='store_true',
@@ -70,6 +83,9 @@ def main():
                             action='store',
                             help='HTTP Server port (default=5000)',
                             default=5000)
+    gui_parser.add_argument('--ibiza',
+                            action='store_true',
+                            help='Use the GUI for data collected with the ibiza endpoints')
 
     # Construct plugins module options
     plugin_parser = subparsers.add_parser('plugin', help='Run a ROADrecon plugin')
@@ -79,9 +95,9 @@ def main():
     # with a short description
     plugins_list = {
         'policies': 'Parse conditional access policies',
-        'bloodhound': 'Export Azure AD data to a custom BloodHound version',
+        'bloodhound': 'Export Entra ID data to a custom BloodHound version',
         'xlsexport': 'Export data to an Excel file',
-        'road2timeline': 'Generate a forensic timeline from Azure AD object timestamps',
+        'road2timeline': 'Generate a forensic timeline from Entra ID object timestamps',
         # 'grep': 'Export grep-compatible lists'
     }
 
@@ -107,7 +123,7 @@ def main():
         sys.exit(1)
         return
 
-    args = parser.parse_args()
+    
     if args.command == 'auth':
         auth.parse_args(args)
         res = auth.get_tokens(args)
@@ -117,12 +133,21 @@ def main():
             return
         auth.save_tokens(args)
     elif args.command == 'gui':
-        from roadtools.roadrecon.server import main as servermain
-        check_database_exists(args.database)
-        servermain(args)
+        if args.ibiza:
+            from roadtools.roadrecon.ibiza_server import main as servermain
+            check_database_exists(args.database)
+            servermain(args)
+        else:
+            from roadtools.roadrecon.server import main as servermain
+            check_database_exists(args.database)
+            servermain(args)
     elif args.command == 'gather' or args.command == 'dump':
-        from roadtools.roadrecon.gather import main as gathermain
-        gathermain(args)
+        if args.ibiza:
+            from roadtools.roadrecon.ibiza_gather import main as enummain
+            enummain(args)
+        else:
+            from roadtools.roadrecon.gather import main as gathermain
+            gathermain(args)
     elif args.command == 'plugin':
         # Dynamic import
         plugin_module = importlib.import_module('roadtools.roadrecon.plugins.{}'.format(args.plugin))
