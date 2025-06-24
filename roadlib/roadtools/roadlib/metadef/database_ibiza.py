@@ -334,7 +334,7 @@ class Group(Base, SerializeMixin):
     memberDevices = relationship("Device", secondary=lnk_group_member_device, back_populates="memberOf")
     memberGroups = relationship("Group", secondary=lnk_group_member_group, primaryjoin=id==lnk_group_member_group.c.Group, secondaryjoin=id==lnk_group_member_group.c.childGroup, back_populates="memberOf")
     memberOf = relationship("Group", secondary=lnk_group_member_group, primaryjoin=id==lnk_group_member_group.c.childGroup, secondaryjoin=id==lnk_group_member_group.c.Group, back_populates="memberGroups")
-    # memberOfAu = relationship("AdministrativeUnit", secondary=lnk_au_member_group, back_populates="memberGroups")
+    memberOfAu = relationship("AdministrativeUnit", secondary=lnk_au_member_group, back_populates="memberGroups")
     memberOfRole = relationship("DirectoryRole", secondary=lnk_role_member_group, back_populates="memberGroups")
     memberServicePrincipals = relationship("ServicePrincipal", secondary=lnk_group_member_serviceprincipal, back_populates="memberOf")
     memberUsers = relationship("User", secondary=lnk_group_member_user, back_populates="memberOf")
@@ -492,6 +492,63 @@ class ServicePrincipal(Base, SerializeMixin):
     publisherDisplayName = Column(Text)
     appType = Column(Integer)
 
+    ownerUsers = relationship("User",
+        secondary=lnk_serviceprincipal_owner_user,
+        back_populates="ownedServicePrincipals")
+
+    ownerServicePrincipals = relationship("ServicePrincipal",
+        secondary=lnk_serviceprincipal_owner_serviceprincipal,
+        primaryjoin=objectId==lnk_serviceprincipal_owner_serviceprincipal.c.ServicePrincipal,
+        secondaryjoin=objectId==lnk_serviceprincipal_owner_serviceprincipal.c.childServicePrincipal,
+        back_populates="ownedServicePrincipals")
+
+    memberOfRole = relationship("DirectoryRole",
+        secondary=lnk_role_member_serviceprincipal,
+        back_populates="memberServicePrincipals")
+
+    ownedServicePrincipals = relationship("ServicePrincipal",
+        secondary=lnk_serviceprincipal_owner_serviceprincipal,
+        primaryjoin=objectId==lnk_serviceprincipal_owner_serviceprincipal.c.childServicePrincipal,
+        secondaryjoin=objectId==lnk_serviceprincipal_owner_serviceprincipal.c.ServicePrincipal,
+        back_populates="ownerServicePrincipals")
+
+    ownedApplications = relationship("Application",
+        secondary=lnk_application_owner_serviceprincipal,
+        back_populates="ownerServicePrincipals")
+
+    memberOf = relationship("Group",
+        secondary=lnk_group_member_serviceprincipal,
+        back_populates="memberServicePrincipals")
+
+    ownedGroups = relationship("Group",
+        secondary=lnk_group_owner_serviceprincipal,
+        back_populates="ownerServicePrincipals")
+
+
+    # oauth2PermissionGrants = relationship("OAuth2PermissionGrant",
+    #     primaryjoin=objectId == foreign(OAuth2PermissionGrant.clientId))
+
+    # appRolesAssigned = relationship("AppRoleAssignment",
+    #     primaryjoin=objectId == foreign(AppRoleAssignment.resourceId))
+
+    # appRolesAssignedTo = relationship("AppRoleAssignment",
+    #     primaryjoin=objectId == foreign(AppRoleAssignment.principalId))
+class EligibleRoleAssignment(Base, SerializeMixin):
+    __tablename__ = "EligibleRoleAssignments"
+    id = Column(Text, primary_key=True)
+    principalId = Column(Text)
+    resourceScopes = Column(JSON)
+    roleDefinitionId = Column(Text, ForeignKey("RoleDefinitions.id"))
+    directoryScopeId = Column(Text)
+    appScopeId = Column(Text)
+    createdUsing = Column(Text)
+    createdDateTime = Column(DateTime)
+    modifiedDateTime = Column(DateTime)
+    status = Column(Text)
+    memberType = Column(Text)
+    scheduleInfo = Column(JSON)
+
+    roleDefinition = relationship("RoleDefinition", back_populates="eligibleAssignments")
 
 class ServicePrincipalMainObject(Base):
     __tablename__ = "sp_main_object"
@@ -642,13 +699,90 @@ class User(Base, SerializeMixin):
     # userType = Column(Text)
 
     memberOf = relationship("Group", secondary=lnk_group_member_user, back_populates="memberUsers")
-    # memberOfAu = relationship("AdministrativeUnit", secondary=lnk_au_member_user, back_populates="memberUsers")
+    memberOfAu = relationship("AdministrativeUnit", secondary=lnk_au_member_user, back_populates="memberUsers")
     memberOfRole = relationship("DirectoryRole", secondary=lnk_role_member_user, back_populates="memberUsers")
     ownedApplications = relationship("Application", secondary=lnk_application_owner_user, back_populates="ownerUsers")
     ownedDevices = relationship("Device", secondary=lnk_device_owner, back_populates="owner")
     ownedGroups = relationship("Group", secondary=lnk_group_owner_user, back_populates="ownerUsers")
     ownedServicePrincipals = relationship("ServicePrincipal", secondary=lnk_serviceprincipal_owner_user, back_populates="ownerUsers")
 
+
+
+
+
+
+
+
+
+
+# Importing for testing
+
+class AppRoleAssignment(Base, SerializeMixin):
+    __tablename__ = "AppRoleAssignments"
+    appRoleId = Column(Text)
+    creationTimestamp = Column(DateTime)
+    deletionTimestamp = Column(DateTime)
+    id = Column(Text, primary_key=True)
+    principalDisplayName = Column(Text)
+    principalId = Column(Text)
+    principalType = Column(Text)
+    resourceDisplayName = Column(Text)
+    resourceId = Column(Text)
+
+
+class AuthorizationPolicy(Base, SerializeMixin):
+    __tablename__ = "AuthorizationPolicys"
+    allowEmailVerifiedUsersToJoinOrganization = Column(Boolean)
+    allowInvitesFrom = Column(Text)
+    allowUserConsentForRiskyApps = Column(Boolean)
+    allowedToSignUpEmailBasedSubscriptions = Column(Boolean)
+    allowedToUseSSPR = Column(Boolean)
+    blockMsolPowerShell = Column(Boolean)
+    defaultUserRolePermissions = Column(JSON)
+    description = Column(Text)
+    displayName = Column(Text)
+    guestUserRoleId = Column(Text)
+    id = Column(Text, primary_key=True)
+
+
+class DirectorySetting(Base, SerializeMixin):
+    __tablename__ = "DirectorySettings"
+    displayName = Column(Text)
+    id = Column(Text, primary_key=True)
+    templateId = Column(Text)
+    values = Column(JSON)
+
+class ExtensionProperty(Base, SerializeMixin):
+    __tablename__ = "ExtensionPropertys"
+    appDisplayName = Column(Text)
+    dataType = Column(Text)
+    deletionTimestamp = Column(DateTime)
+    id = Column(Text, primary_key=True)
+    isSyncedFromOnPremises = Column(Boolean)
+    name = Column(Text)
+    objectType = Column(Text)
+    targetObjects = Column(JSON)
+
+class OAuth2PermissionGrant(Base, SerializeMixin):
+    __tablename__ = "OAuth2PermissionGrants"
+    clientId = Column(Text)
+    consentType = Column(Text)
+    id = Column(Text, primary_key=True)
+    principalId = Column(Text)
+    resourceId = Column(Text)
+    scope = Column(Text)
+
+class AppRoleAssignmentto(Base, SerializeMixin):
+    __tablename__ = "AppRoleAssignmentsto"
+    appRoleId = Column(Text)
+    createdDateTime = Column(DateTime)
+    deletedDateTime = Column(DateTime)
+    id = Column(Text, primary_key=True)
+    principalDisplayName = Column(Text)
+    principalId = Column(Text)
+    principalType = Column(Text)
+    resourceDisplayName = Column(Text)
+    resourceId = Column(Text)
 
 def parse_db_argument(dbarg):
     if not ':/' in dbarg:

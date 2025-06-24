@@ -61,7 +61,7 @@ async def dumphelper(url, method=requests.get):
         await ratelimit()
         try:
             urlcounter += 1
-            async with method(nexturl, headers=headers) as req:
+            async with method(nexturl, headers=headers, **proxy_config, verify_ssl=disable_verify_switch) as req:
                 # Hold off when rate limit is reached
                 if req.status == 429:
                     if tokencounter > 0:
@@ -88,6 +88,7 @@ async def dumphelper(url, method=requests.get):
                     nexturl = mknext(objects['odata.nextLink'], url)
                 except KeyError:
                     nexturl = None
+                print(objects)
                 try:
                     for robject in objects['value']:
                         yield robject
@@ -532,6 +533,20 @@ async def run(args):
 
     engine = database.init(destroy_db, dburl=dburl)
     dumper = DataDumper(tenantid, '1.61-internal', engine=engine)
+    global proxy_config
+    proxy_config = {}  
+    if args.proxy:
+        print(args.proxy)
+        proxy_config = {
+            'proxy': f'{args.proxy_type}://{args.proxy}'
+        }
+        
+    global disable_verify_switch
+    disable_verify_switch = True
+    if args.disable_verify:
+        print("here",args.disable_verify)
+        disable_verify_switch = False
+
     if not args.skip_first_phase:
         async with aiohttp.ClientSession() as ahsession:
             print('Starting data gathering phase 1 of 2 (collecting objects)')
@@ -705,6 +720,8 @@ def getargs(gather_parser):
                               help='Proxy server address (e.g., http://proxy.example.com:8080)')
     gather_parser.add_argument('--proxy-type', action='store', default='http',
                               help='Proxy type (http, https, socks5, etc.)')
+    gather_parser.add_argument('--disable-verify', default=True, action="store_true",
+                              help='Disable SSL validation')
 
 def main(args=None):
     global token, headers, dburl, urlcounter
