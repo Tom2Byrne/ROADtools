@@ -44,6 +44,8 @@ tokenfilltime = time.time()
 
 clientRequestId = "01ea3335-b7a6-4552-8bd8-562ee32fd818"
 
+msgraphToken = None
+
 MAX_GROUPS = 3000
 MAX_REQ_PER_SEC = 600.0
 
@@ -118,6 +120,9 @@ async def dumphelper(url, method=requests.get, json_body=None):
                 elif 'appList' in objects:
                     for robject in objects['appList']:
                         yield robject
+                elif 'value' in objects:
+                    for robject in objects['value']:
+                        yield robject
                 else:
                     # If 'items' key does not exist, yield the entire object
                     yield objects
@@ -174,13 +179,13 @@ def checktoken():
 
 async def dumpsingle(url, method):
 
-    global urlcounter, tokencounter
+    global urlcounter, tokencounter, proxy_config, disable_verify_switch
     checktoken()
     await ratelimit()
     headers['X-Ms-Client-Request-Id']=clientRequestId
     try:
         urlcounter += 1
-        async with method(url, headers=headers) as res:
+        async with method(url, headers=headers, **proxy_config, verify_ssl=disable_verify_switch) as res:
             if res.status == 429:
                 if tokencounter > 0:
                     tokencounter -= 10*MAX_REQ_PER_SEC
@@ -203,35 +208,6 @@ async def dumpsingle(url, method):
         return
     
 
-# async def dumpsingle(url, method, json_body=None):
-#     global urlcounter, tokencounter
-#     checktoken()
-#     await ratelimit()
-#     try:
-#         urlcounter += 1
-#         request_kwargs = {'headers': headers}
-#         if json_body is not None:
-#             request_kwargs['json'] = json_body  # Correct way to send JSON in body
-
-#         async with method(url, **request_kwargs) as res:
-#             if res.status == 429:
-#                 if tokencounter > 0:
-#                     tokencounter -= 10 * MAX_REQ_PER_SEC
-#                     print('Sleeping because of rate-limit hit')
-#                 # Retry with original body
-#                 return await dumpsingle(url, method, json_body)
-
-#             if res.status != 200:
-#                 if res.status == 404 and ('applicationRefs' in url or 'a0b1b346-4d3e-4e8b-98f8-753987be4970' in url):
-#                     return
-#                 print('Error %d for URL %s' % (res.status, url))
-#                 return
-
-#             return await res.json()
-
-#     except Exception as exc:
-#         print(exc)
-#         return
 
 def enginecommit(engine, dbtype, cache, ignore=False):
     global dburl
@@ -285,7 +261,10 @@ def commitlink(session, cachedict, ignore=False):
         )
 
 def commitmfa(session, dbtype, cache):
-    statement = dbtype.__table__.update().where(dbtype.objectId == bindparam('userid'))
+    try:
+        statement = dbtype.__table__.update().where(dbtype.objectId == bindparam('userid'))
+    except:
+        statement = dbtype.__table__.update().where(dbtype.id == bindparam('userid'))
     session.execute(
         statement,
         cache
@@ -306,13 +285,13 @@ class DataDumper(object):
         self.engine = engine
         self.ahsession = ahsession
 
-    async def dump_object(self, objecttype, dbtype, method=None):
+    async def dump_object(self, objecttype, dbtype, method=None, json_body=None):
         if method is None:
             method = self.ahsession.get
         url = 'https://main.iam.ad.ext.azure.com/api/%s' % (objecttype)
 
         cache = []
-        async for obj in dumphelper(url, method=method):
+        async for obj in dumphelper(url, method=method, json_body=json_body):
             cache.append(obj)
             # print(json.dumps(cache, indent=2))
             if len(cache) > 1000:
@@ -324,35 +303,37 @@ class DataDumper(object):
         
 
     async def dump_object_msgraph(self, objecttype, dbtype, method=None):
-        print("[INFO] Refreshing token to graph.microsoft.com")
-        auth = Authentication()
-        # tokendata = auth.parse_accesstoken(token['accessToken'])
-        # refreshToken = token['refreshToken']
-        if tokendata['aud'] not in ('https://graph.microsoft.com', 'https://graph.microsoft.com/', '00000003-0000-0000-c000-000000000000'):
-            auth.client_id = "04b07795-8ddb-461a-bbee-02f9e1bf7b46" # Azure CLI
-            auth.resource_uri = "https://graph.microsoft.com"
-        print(f"[INFO] Using Client: {auth.client_id} - This might get blocked by Conditional Access") # TO DO: still to make this process better
-        auth.tenant = token['tenantId']
-        auth.tokendata = token
-        if 'useragent' in token:
-            auth.set_user_agent(token['useragent'])
-        if 'originheader' in token:
-            auth.set_origin_value(token['originheader'])
-        if 'refreshToken' in token:
-            print("- Attempting token refresh -")
-            token = auth.authenticate_with_refresh(token)
-            headers['Authorization'] = '%s %s' % (token['tokenType'], token['accessToken'])
-            expiretime = int(time.time()) + int(token['expiresIn'])
-            print('+ Refreshed token +')
-            return True
-        elif time.time() > expiretime:
-            print('Access token is expired, but no access to refresh token! Dumping will fail')
-            return False
+        global token, msgraphToken
+        # Dont want to refresh the token every time we call this function
+        if msgraphToken is None:
+            print("[INFO] Refreshing token to graph.microsoft.com")
+            auth = Authentication()
+            # tokendata = auth.parse_accesstoken(token['accessToken'])
+            # refreshToken = token['refreshToken']
+            if tokendata['aud'] not in ('https://graph.microsoft.com', 'https://graph.microsoft.com/', '00000003-0000-0000-c000-000000000000'):
+                auth.client_id = "04b07795-8ddb-461a-bbee-02f9e1bf7b46" # Azure CLI
+                auth.resource_uri = "https://graph.microsoft.com"
+            print(f"[INFO] Using Client: {auth.client_id} - This might get blocked by Conditional Access") # TO DO: still to make this process better
+            auth.tenant = token['tenantId']
+            auth.tokendata = token
+            if 'useragent' in token:
+                auth.set_user_agent(token['useragent'])
+            if 'originheader' in token:
+                auth.set_origin_value(token['originheader'])
+            if 'refreshToken' in token:
+                print("- Attempting token refresh -")
+                msgraphToken = auth.authenticate_with_refresh(token)
+                headers['Authorization'] = '%s %s' % (msgraphToken['tokenType'], msgraphToken['accessToken'])
+                expiretime = int(time.time()) + int(msgraphToken['expiresIn'])
+                print('+ Refreshed token +')
+            elif time.time() > expiretime:
+                print('Access token is expired, but no access to refresh token! Dumping will fail')
+                return False
 
         if method is None:
             method = self.ahsession.get
-        url = 'https://graph.microsoft.com/%s' % (objecttype)
-        # print(url)
+        url = 'https://graph.microsoft.com/v1.0/%s' % (objecttype)
+        
         cache = []
         async for obj in dumphelper(url, method=method):
             cache.append(obj)
@@ -367,7 +348,7 @@ class DataDumper(object):
         if method is None:
             method = self.ahsession.get
         url = 'https://main.iam.ad.ext.azure.com/api/Directories/%s/Details' % (self.tenantid)
-        # print(url)
+        
         cache = []
         async for obj in dumphelper(url, method=method):
             cache.append(obj)
@@ -382,12 +363,14 @@ class DataDumper(object):
         """
         Enumerates all Conditional Access Policies and fetches their full detail individually.
         """
+
         if method is None:
             method = self.ahsession.get
         url = 'https://main.iam.ad.ext.azure.com/api/Policies/Policies?top=999&nextLink=' 
         cache = []
         async for obj in dumphelper(url, method=method):
             policy_id = obj.get("policyId")
+            print(policy_id)
             if policy_id:
                 detail_url = 'https://main.iam.ad.ext.azure.com/api/Policies/%s' % (policy_id)
                 policy_details = await dumpsingle(detail_url, method=method) # TO DO - Make faster
@@ -397,6 +380,12 @@ class DataDumper(object):
                     del cache[:]
         if len(cache) > 0:
                 enginecommit(self.engine, dbtype, cache)
+    
+    async def dump_sps_to_db(self, url, method, cache):
+        obj = await dumpsingle(url, method=method)
+        if not obj:
+            return
+        cache.append(obj)
 
     async def dump_service_principal_object(self, objecttype, dbtype, post_body):
         """
@@ -405,21 +394,60 @@ class DataDumper(object):
         url = 'https://main.iam.ad.ext.azure.com/api/%s' % (objecttype)
         method = self.ahsession.post
         cache = []
+        jobs = []
+        i = 0
+            
         async for obj in dumphelper(url, method=method, json_body=post_body):
             
-            # cache.append(obj)
-            # Get request each objectId
             application_id = obj.get("objectId")
             if application_id:
                 detail_url = 'https://main.iam.ad.ext.azure.com/api/ManagedApplications/%s' % (application_id)
-                policy_details = await dumpsingle(detail_url, method=self.ahsession.get)
-                print(policy_details)
-                cache.append(policy_details)
-                if len(cache) > 1000:
-                    enginecommit(self.engine, dbtype, cache)
-                    del cache[:]
-        if len(cache) > 0:
+                jobs.append(self.dump_sps_to_db(detail_url, method=self.ahsession.get, cache=cache))
+            i += 1
+            # Chunk it to avoid huge memory usage
+            if i > 1000:
+                await asyncio.gather(*jobs)
+                del jobs[:]
                 enginecommit(self.engine, dbtype, cache)
+                del cache[:]
+                i = 0
+        if i > 0:
+                await asyncio.gather(*jobs)
+                enginecommit(self.engine, dbtype, cache)
+        del cache[:]
+
+    async def dump_object_cache(self, objecttype, method, json_body=None):
+        """
+        Dump objects via a POST request and return them for further parseing
+        """
+        url = 'https://main.iam.ad.ext.azure.com/api/%s' % (objecttype)
+        if method is None:
+            method = self.ahsession.post
+        cache = []
+        async for obj in dumphelper(url, method=method, json_body=json_body):
+            cache.append(obj)
+        return cache
+    
+    # async def dump_service_principal_object(self, obj, dbtype):
+    #     """
+    #     Dump paginated objects via a POST request and store them in the database.
+    #     """ 
+    #     cache = []
+       
+    #     application_id = obj.get("objectId")
+    #     if application_id:
+    #         detail_url = 'https://main.iam.ad.ext.azure.com/api/ManagedApplications/%s' % (application_id)
+    #         policy_details = await dumpsingle(detail_url, method=self.ahsession.get)
+            
+    #         if isinstance(policy_details, dict):
+    #             cache.append(policy_details)
+    #         # else:
+    #         #     print(f"Unexpected object type: {type(policy_details)}")
+    #         if len(cache) > 1000:
+    #             enginecommit(self.engine, dbtype, cache)
+    #             del cache[:]
+    #     if len(cache) > 0:
+    #             enginecommit(self.engine, dbtype, cache)
 
 
         # next_link = ''
@@ -451,8 +479,11 @@ class DataDumper(object):
         # print("URL FIRST:", url)
         # Essentially this takes a URL sends a request and recieves a response immediately and then tries to parse the response with objectId, objclass = obj['url'].split('/')[-2:] - Previously AAD graph returned an object with a load of URLs which is why this logic is here to get the URLs for the linked objects
         async for obj in dumphelper(url, method=method):
-            # print(url)
-            objectId = obj['objectId']
+            
+            try:
+                objectId = obj['objectId']
+            except:
+                objectId = obj['id']
             
             objclass = obj['@odata.type'].strip('#')
            
@@ -517,8 +548,11 @@ class DataDumper(object):
         jobs = []
         i = 0
         for parent in parents:
-            url = 'https://main.iam.ad.ext.azure.com/api/%s/%s/%s' % (objecttype, parent.objectId, linktype)
-            # print(url)
+            if hasattr(parent, 'objectId'):
+                url = 'https://graph.microsoft.com/v1.0/%s/%s/%s' % (objecttype, parent.objectId, linktype)
+            elif hasattr(parent, 'id'):
+                url = 'https://graph.microsoft.com/v1.0/%s/%s/%s' % (objecttype, parent.id, linktype)
+
             jobs.append(self.dump_l_to_db(url, method, mapping, linkname, childtbl, parent))
             i += 1
             # Chunk it to avoid huge memory usage
@@ -535,8 +569,8 @@ class DataDumper(object):
         parents = self.session.query(parenttbl.objectId).all()
         jobs = []
         for parentid, in parents:
-            url = 'https://main.iam.ad.ext.azure.com/api/%s/%s/%s' % (objecttype, parentid, linktype)
-            # print(url)
+            url = 'https://graph.microsoft.com/v1.0/%s/%s/%s' % (objecttype, parentid, linktype)
+            
             # Chunk it to avoid huge memory usage
             await queue.put(self.dump_l_to_linktable(url, method, mapping, parentid, objecttype))
         await queue.join()
@@ -564,8 +598,8 @@ class DataDumper(object):
         cache = []
         i = 0
         for parentid, in parents:
-            url = 'https://main.iam.ad.ext.azure.com/api/reports/authenticationMethods/userRegistrationDetails/%s' % (parentid)
-            # print(url)
+            url = 'https://graph.microsoft.com/v1.0/reports/authenticationMethods/userRegistrationDetails/%s' % (parentid)
+            
             jobs.append(self.dump_mfa_to_db(url, method, parentid, cache))
             i += 1
             # Chunk it to avoid huge memory usage
@@ -612,8 +646,8 @@ class DataDumper(object):
         cache = []
         jobs = []
         for parent in parents:
-            url = 'https://main.iam.ad.ext.azure.com/api/%s/%s/%s' % (objecttype, parent.objectId, linktype)
-            # print(url)
+            url = 'https://graph.microsoft.com/v1.0/%s/%s/%s' % (objecttype, parent.objectId, linktype)
+            
             jobs.append(self.dump_lo_to_db(url, method, linkobjecttype, cache, ignore_duplicates=ignore_duplicates))
         await asyncio.gather(*jobs)
         if len(cache) > 0:
@@ -624,12 +658,15 @@ class DataDumper(object):
     async def dump_object_expansion(self, objecttype, dbtype, expandprop, linkname, childtbl, mapping=None, method=None):
         if method is None:
             method = self.ahsession.get
-        url = 'https://main.iam.ad.ext.azure.com/api/%s?$expand=%s' % (objecttype, expandprop)
-        # print(url)
+        url = 'https://graph.microsoft.com/v1.0/%s?$expand=%s' % (objecttype, expandprop)
+        
         i = 0
         async for obj in dumphelper(url, method=method):
             if len(obj[expandprop]) > 0:
-                parent = self.session.get(dbtype, obj['objectId'])
+                try:
+                    parent = self.session.get(dbtype, obj['objectId'])
+                except:
+                    parent = self.session.get(dbtype, obj['id'])
                 if not parent:
                     print('Non-existing parent found during expansion %s %s: %s' % (dbtype.__table__, expandprop, obj['objectId']))
                     continue
@@ -641,7 +678,10 @@ class DataDumper(object):
                         except KeyError:
                             print('Unsupported member type: %s' % objclass)
                             continue
-                    child = self.session.get(childtbl, epdata['objectId'])
+                    try:
+                        child = self.session.get(childtbl, epdata['objectId'])
+                    except:
+                        child = self.session.get(childtbl, epdata['id'])
                     if not child:
                         print('Non-existing child during expansion %s %s: %s' % (dbtype.__table__, expandprop, epdata['objectId']))
                         continue
@@ -656,10 +696,25 @@ class DataDumper(object):
         if method is None:
             method = self.ahsession.get
         cache = []
-        url = 'https://main.iam.ad.ext.azure.com/api/%s?$select=keyCredentials,objectId' % (objecttype)
-        # print(url)
+        from sqlalchemy import inspect
+        table = inspect(dbtype)
+        
+        try:
+            url = 'https://graph.microsoft.com/v1.0/%s?$select=keyCredentials,objectId' % (objecttype)
+        except:
+            url = 'https://graph.microsoft.com/v1.0/%s?$select=keyCredentials,id' % (objecttype)
+
+        # url = 'https://graph.microsoft.com/v1.0/%s?$select=keyCredentials,objectId' % (objecttype)
+        
         async for obj in dumphelper(url, method=method):
-            cache.append({'userid':obj['objectId'], 'keyCredentials':obj['keyCredentials']})
+            try:
+                cache.append({'userid':obj['objectId'], 'keyCredentials':obj['keyCredentials']})
+            except:
+                cache.append({'userid':obj['id'], 'keyCredentials':obj['keyCredentials']})
+            finally:
+                print("[-] No KeyCredentials returned")
+                break
+
             if len(cache) > 1000:
                 commitmfa(self.session, dbtype, cache)
                 del cache[:]
@@ -671,8 +726,8 @@ class DataDumper(object):
         cache = []
         jobs = []
         for parentid in parents:
-            url = 'https://main.iam.ad.ext.azure.com/api/%s/%s' % (endpoint, parentid)
-            # print(url)
+            url = 'https://graph.microsoft.com/v1.0/%s/%s' % (endpoint, parentid)
+            
             jobs.append(self.dump_so_to_db(url, self.ahsession.get, dbtype, cache, ignore_duplicates=ignore_duplicates))
         await asyncio.gather(*jobs)
         if len(cache) > 0:
@@ -684,8 +739,8 @@ class DataDumper(object):
         cache = []
         jobs = []
         for parent in parents:
-            url = 'https://main.iam.ad.ext.azure.com/api/%s/%s' % (endpoint, parent.appId)
-            # print(url)
+            url = 'https://graph.microsoft.com/v1.0/%s/%s' % (endpoint, parent.appId)
+            
             jobs.append(self.dump_so_to_db(url, self.ahsession.get, dbtype, cache, ignore_duplicates=ignore_duplicates))
         await asyncio.gather(*jobs)
         if len(cache) > 0:
@@ -697,7 +752,7 @@ class DataDumper(object):
         cache = []
         jobs = []
         for parent in parents:
-            url = 'https://main.iam.ad.ext.azure.com/api/roleManagement/directory/roleAssignments?$filter=roleDefinitionId eq \'%s\'' % (parent.objectId)
+            url = 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?$filter=roleDefinitionId eq \'%s\'' % (parent.id)
             # print(parent.objectId)
             jobs.append(self.dump_lo_to_db(url, self.ahsession.get, dbtype, cache, ignore_duplicates=ignore_duplicates))
         await asyncio.gather(*jobs)
@@ -711,8 +766,8 @@ class DataDumper(object):
         cache = []
         jobs = []
         # for parent in parents:
-        url = 'https://main.iam.ad.ext.azure.com/api/roleManagement/directory/roleEligibilitySchedules'#'https://main.iam.ad.ext.azure.com/api/eligibleRoleAssignments?$filter=roleDefinitionId eq \'%s\'' % (parent.objectId)
-        # print(url)
+        url = 'https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilitySchedules'#'https://main.iam.ad.ext.azure.com/api/eligibleRoleAssignments?$filter=roleDefinitionId eq \'%s\'' % (parent.objectId)
+        
         jobs.append(self.dump_lo_to_db(url, self.ahsession.get, dbtype, cache))
         await asyncio.gather(*jobs)
         if len(cache) > 0:
@@ -786,149 +841,169 @@ async def run(args):
             
             print('Starting data gathering phase 1 of 2 (collecting objects)')
             dumper.ahsession = ahsession
-            tasks = []
-            
-            tasks.append(dumper.dump_object('Users?top=999&searchText=', User, method=ahsession.post)) 
-            tasks.append(dumper.dump_org_details(TenantDetail))
-            tasks.append(dumper.dump_object('Directories/Properties', TenantProperties))
-            tasks.append(dumper.dump_conditional_access_policies(Policy))
-            tasks.append(dumper.dump_service_principal_object('ManagedApplications/List', ServicePrincipal, post_body=post_body))
-            tasks.append(dumper.dump_object('Groups?top=999', Group))
-            # maybe add dynamic group details https://main.iam.ad.ext.azure.com/api/Groups/__GROUPID__/GetDynamicGroupProperties
-            tasks.append(dumper.dump_object_msgraph('directory/administrativeUnits', AdministrativeUnit)) # Don't see a way to get this information with Ibiza IAM - maybe use Graph? Will just leave it excluded for now as i dont want people to use the ibiza version trying to go undetected thinking there will be no graph requests and then there is some under the hood. 
-
-            # tasks.append(dumper.dump_object_msgraph('applications', Application)) # TO DO: make into Ibiza API req
-            # tasks.append(dumper.dump_object_msgraph('devices', Device))
-            # tasks.append(dumper.dump_object_msgraph('directoryRoles', DirectoryRole))
-            # tasks.append(dumper.dump_object_msgraph('roleManagement/directory/roleDefinitions', RoleDefinition))
-            # # tasks.append(dumper.dump_object('deviceManagement/roleDefinitions', RoleDefinition)) # possibly interesting? 
-            # # tasks.append(dumper.dump_object('domains', Domain))# No class for this yet
-            # tasks.append(dumper.dump_object_msgraph('roleManagement/directory/roleAssignments', RoleAssignment))
-            # tasks.append(dumper.dump_object_msgraph('contacts', Contact))
-
-            # tasks.append(dumper.dump_object('oauth2PermissionGrants', OAuth2PermissionGrant))
-            # tasks.append(dumper.dump_object('policies/authorizationPolicy', AuthorizationPolicy))
-            await asyncio.gather(*tasks)
-
-    # Session = sessionmaker(bind=engine)
-    # dbsession = Session()
-
-    # if args.skip_first_phase:
-    #     # Delete existing links to make sure we start with clean data
-    #     for table in database_ibiza.Base.metadata.tables.keys():
-    #         if table.startswith('lnk_'):
-    #             dbsession.execute(text("DELETE FROM {0}".format(table)))
-    #     dbsession.query(ApplicationRef).delete()
-    #     dbsession.query(RoleAssignment).delete()
-    #     dbsession.query(EligibleRoleAssignment).delete()
-    #     dbsession.commit()
-
-    # # Mapping object, mapping type returned to Table and link name
-    # group_mapping = {
-    #     'microsoft.graph.user': (User, 'memberUsers'),
-    #     'microsoft.graph.group': (Group, 'memberGroups'),
-    #     'microsoft.graph.contact': (Contact, 'memberContacts'),
-    #     'microsoft.graph.device': (Device, 'memberDevices'),
-    #     'microsoft.graph.serviceprincipal': (ServicePrincipal, 'memberServicePrincipals'),
-    # }
-    # group_owner_mapping = {
-    #     'microsoft.graph.user': (User, 'ownerUsers'),
-    #     'microsoft.graph.serviceprincipal': (ServicePrincipal, 'ownerServicePrincipals'),
-    # }
-    # owner_mapping = {
-    #     'microsoft.graph.user': (User, 'ownerUsers'),
-    #     'microsoft.graph.serviceprincipal': (ServicePrincipal, 'ownerServicePrincipals'),
-    # }
-    # au_mapping = {
-    #     'microsoft.graph.user': (User, 'memberUsers'),
-    #     'microsoft.graph.group': (Group, 'memberGroups'),
-    #     'microsoft.graph.device': (Device, 'memberDevices'),
-    # }
-    # role_mapping = {
-    #     'microsoft.graph.user': (User, 'memberUsers'),
-    #     'microsoft.graph.serviceprincipal': (ServicePrincipal, 'memberServicePrincipals'),
-    #     'microsoft.graph.group': (Group, 'memberGroups'),
-    # }
-    # # Direct link mapping
-    # group_link_mapping = {
-    #     'microsoft.graph.user': (lnk_group_member_user, 'Group', 'User'),
-    #     'microsoft.graph.group': (lnk_group_member_group, 'Group', 'childGroup'),
-    #     'microsoft.graph.contact': (lnk_group_member_contact, 'Group', 'Contact'),
-    #     'microsoft.graph.device': (lnk_group_member_device, 'Group', 'Device'),
-    #     'microsoft.graph.serviceprincipal': (lnk_group_member_serviceprincipal, 'Group', 'ServicePrincipal'),
-    # }
-    # # au_link_mapping = {
-    # #     'microsoft.graph.user': (lnk_au_member_user, 'AdministrativeUnit', 'User'),
-    # #     'microsoft.graph.group': (lnk_au_member_group, 'AdministrativeUnit', 'Group'),
-    # #     'microsoft.graph.device': (lnk_au_member_device, 'AdministrativeUnit', 'Device'),
-    # # }
-    # group_owner_link_mapping = {
-    #     'microsoft.graph.user': (lnk_group_owner_user, 'Group', 'User'),
-    #     'microsoft.graph.serviceprincipal': (lnk_group_owner_serviceprincipal, 'Group', 'ServicePrincipal'),
-    # }
-    # device_link_mapping = {
-    #     'microsoft.graph.user': (lnk_device_owner, 'Device', 'User'),
-    # }
-
-    # tasks = []
-    # dumper.session = dbsession
-    # # pylint: disable=not-callable
-    # totalgroups = dbsession.query(func.count(Group.objectId)).scalar()
-    # totaldevices = dbsession.query(func.count(Device.objectId)).scalar()
-    # if totalgroups > MAX_GROUPS:
-    #     print('Gathered {0} groups, switching to 3-phase approach for efficiency'.format(totalgroups))
-    # async with aiohttp.ClientSession() as ahsession:
-        
-    #     if totalgroups > MAX_GROUPS:
-    #         print('Starting data gathering phase 2 of 3 (collecting properties and relationships)')
-    #     else:
-    #         print('Starting data gathering phase 2 of 2 (collecting properties and relationships)')
-    #     dumper.ahsession = ahsession
-    #     # If we have a lot of groups, dump them separately
-    #     if totalgroups <= MAX_GROUPS:
-    #         tasks.append(dumper.dump_links('groups', 'members', Group, mapping=group_mapping))
-    #         tasks.append(dumper.dump_links('groups', 'owners', Group, mapping=group_owner_mapping))
-    #         # tasks.append(dumper.dump_links('administrativeUnits', 'members', AdministrativeUnit, mapping=au_mapping))
-    #         tasks.append(dumper.dump_object_expansion('devices', Device, 'registeredOwners', 'owner', User))
-    #     tasks.append(dumper.dump_links('directoryRoles', 'members', DirectoryRole, mapping=role_mapping))
-    #     tasks.append(dumper.dump_linked_objects('servicePrincipals', 'appRoleAssignedTo', ServicePrincipal, AppRoleAssignmentto, ignore_duplicates=True))
-    #     tasks.append(dumper.dump_linked_objects('servicePrincipals', 'appRoleAssignments', ServicePrincipal, AppRoleAssignment, ignore_duplicates=True))
-    #     tasks.append(dumper.dump_object_expansion('servicePrincipals', ServicePrincipal, 'owners', 'owner', User, mapping=owner_mapping))
-    #     tasks.append(dumper.dump_object_expansion('applications', Application, 'owners', 'owner', User, mapping=owner_mapping))
-    #     tasks.append(dumper.dump_custom_role_members(RoleAssignment))
-    #     tasks.append(dumper.dump_eligible_role_members(EligibleRoleAssignment))
-    #     if args.mfa:
-    #         tasks.append(dumper.dump_mfa(User, method=ahsession.get))
-    #     # tasks.append(dumper.dump_each(ServicePrincipal, 'applicationRefs', ApplicationRef)) # Doesn't look like new graph has a direct alternative API available
-    #     tasks.append(dumper.dump_keycredentials('servicePrincipals', ServicePrincipal))
-    #     tasks.append(dumper.dump_keycredentials('applications', Application))
-    #     await asyncio.gather(*tasks)
-    # dbsession.commit()
-
-    # tasks = []
-    # if totalgroups > MAX_GROUPS:
-    #     print('Starting data gathering phase 3 of 3 (collecting group memberships and device owners)')
-    #     async with aiohttp.ClientSession() as ahsession:
+            # Need to split into two tasks because otherwise the token refresh to msgraph will likely happen at the same time as execution of ibiza tasks which will cause them to fail
+            ibizatasks = []
+            msgraphtasks = []
+            ibizatasks.append(dumper.dump_object('Users?top=999&searchText=', User, method=ahsession.post)) 
+            ibizatasks.append(dumper.dump_org_details(TenantDetail))
+            ibizatasks.append(dumper.dump_object('Directories/Properties', TenantProperties))
+            ibizatasks.append(dumper.dump_conditional_access_policies(Policy))
            
-    #         dumper.ahsession = ahsession
-    #         queue = asyncio.Queue(maxsize=100)
-    #         # Start the workers
-    #         workers = []
-    #         for i in range(100):
-    #             workers.append(asyncio.ensure_future(queue_processor(queue)))
+            
+            # ----------------- Slow but works -----------------
+            # ibizatasks.append(dumper.dump_service_principal_object('ManagedApplications/List', ServicePrincipal, post_body=post_body))
+            # ---------------------------------------------------
 
-    #         tasks.append(dumper.dump_links_with_queue(queue, 'devices', 'registeredOwners', Device, mapping=device_link_mapping))
-    #         tasks.append(dumper.dump_links_with_queue(queue, 'groups', 'members', Group, mapping=group_link_mapping))
-    #         tasks.append(dumper.dump_links_with_queue(queue, 'groups', 'owners', Group, mapping=group_owner_link_mapping))
-    #         # tasks.append(dumper.dump_links_with_queue(queue, 'administrativeUnits', 'members', AdministrativeUnit, mapping=au_link_mapping))
+            # ----------------- Quick but seems to cause issues -----------------
+             # Get all SP objects and then we can asynchronously fetch the full details for each individually
+            # servicePrincipals = await dumper.dump_service_principal_object('ManagedApplications/List', method=ahsession.post, json_body=post_body)
+            
+            # for sp in servicePrincipals:
+            #     ibizatasks.append(
+            #         dumper.dump_service_principal_object(sp, ServicePrincipal)
+            #     )
+            # ---------------------------------------------------
 
-    #         await asyncio.gather(*tasks)
-    #         await queue.join()
-    #         for worker_task in workers:
-    #             worker_task.cancel()
 
-    # dbsession.commit()
-    # dbsession.close()
+            ibizatasks.append(dumper.dump_object('Groups?top=999', Group))
+            # maybe add dynamic group details https://main.iam.ad.ext.azure.com/api/Groups/__GROUPID__/GetDynamicGroupProperties
+            msgraphtasks.append(dumper.dump_object_msgraph('directory/administrativeUnits', AdministrativeUnit)) # Don't see a way to get this information with Ibiza IAM - maybe use Graph? Will just leave it excluded for now as i dont want people to use the ibiza version trying to go undetected thinking there will be no graph requests and then there is some under the hood. 
+
+            msgraphtasks.append(dumper.dump_object_msgraph('applications', Application)) # TO DO: make into Ibiza API req - could do but kind of pointless since graph gives you everything from just listing them
+            msgraphtasks.append(dumper.dump_object_msgraph('devices', Device))
+            msgraphtasks.append(dumper.dump_object_msgraph('directoryRoles', DirectoryRole))
+            msgraphtasks.append(dumper.dump_object_msgraph('roleManagement/directory/roleDefinitions', RoleDefinition))
+            # msgraphtasks.append(dumper.dump_object('deviceManagement/roleDefinitions', RoleDefinition)) # possibly interesting? 
+            # msgraphtasks.append(dumper.dump_object('domains', Domain))# No class for this yet
+            msgraphtasks.append(dumper.dump_object_msgraph('roleManagement/directory/roleAssignments', RoleAssignment))
+            msgraphtasks.append(dumper.dump_object_msgraph('contacts', Contact))
+
+            msgraphtasks.append(dumper.dump_object_msgraph('oauth2PermissionGrants', OAuth2PermissionGrant))
+            msgraphtasks.append(dumper.dump_object_msgraph('policies/authorizationPolicy', AuthorizationPolicy))
+            await asyncio.gather(*ibizatasks)
+            await asyncio.gather(*msgraphtasks)
+
+    Session = sessionmaker(bind=engine)
+    dbsession = Session()
+
+    if args.skip_first_phase:
+        # Delete existing links to make sure we start with clean data
+        for table in database_ibiza.Base.metadata.tables.keys():
+            if table.startswith('lnk_'):
+                dbsession.execute(text("DELETE FROM {0}".format(table)))
+        dbsession.query(ApplicationRef).delete()
+        dbsession.query(RoleAssignment).delete()
+        dbsession.query(EligibleRoleAssignment).delete()
+        dbsession.commit()
+
+    # Mapping object, mapping type returned to Table and link name
+    group_mapping = {
+        'microsoft.graph.user': (User, 'memberUsers'),
+        'microsoft.graph.group': (Group, 'memberGroups'),
+        'microsoft.graph.contact': (Contact, 'memberContacts'),
+        'microsoft.graph.device': (Device, 'memberDevices'),
+        'microsoft.graph.serviceprincipal': (ServicePrincipal, 'memberServicePrincipals'),
+    }
+    group_owner_mapping = {
+        'microsoft.graph.user': (User, 'ownerUsers'),
+        'microsoft.graph.serviceprincipal': (ServicePrincipal, 'ownerServicePrincipals'),
+    }
+    owner_mapping = {
+        'microsoft.graph.user': (User, 'ownerUsers'),
+        'microsoft.graph.serviceprincipal': (ServicePrincipal, 'ownerServicePrincipals'),
+    }
+    au_mapping = {
+        'microsoft.graph.user': (User, 'memberUsers'),
+        'microsoft.graph.group': (Group, 'memberGroups'),
+        'microsoft.graph.device': (Device, 'memberDevices'),
+    }
+    role_mapping = {
+        'microsoft.graph.user': (User, 'memberUsers'),
+        'microsoft.graph.serviceprincipal': (ServicePrincipal, 'memberServicePrincipals'),
+        'microsoft.graph.group': (Group, 'memberGroups'),
+    }
+    # Direct link mapping
+    group_link_mapping = {
+        'microsoft.graph.user': (lnk_group_member_user, 'Group', 'User'),
+        'microsoft.graph.group': (lnk_group_member_group, 'Group', 'childGroup'),
+        'microsoft.graph.contact': (lnk_group_member_contact, 'Group', 'Contact'),
+        'microsoft.graph.device': (lnk_group_member_device, 'Group', 'Device'),
+        'microsoft.graph.serviceprincipal': (lnk_group_member_serviceprincipal, 'Group', 'ServicePrincipal'),
+    }
+    # au_link_mapping = {
+    #     'microsoft.graph.user': (lnk_au_member_user, 'AdministrativeUnit', 'User'),
+    #     'microsoft.graph.group': (lnk_au_member_group, 'AdministrativeUnit', 'Group'),
+    #     'microsoft.graph.device': (lnk_au_member_device, 'AdministrativeUnit', 'Device'),
+    # }
+    group_owner_link_mapping = {
+        'microsoft.graph.user': (lnk_group_owner_user, 'Group', 'User'),
+        'microsoft.graph.serviceprincipal': (lnk_group_owner_serviceprincipal, 'Group', 'ServicePrincipal'),
+    }
+    device_link_mapping = {
+        'microsoft.graph.user': (lnk_device_owner, 'Device', 'User'),
+    }
+
+
+    headers['Authorization'] = '%s %s' % (msgraphToken['tokenType'], msgraphToken['accessToken'])
+    tasks = []
+    dumper.session = dbsession
+    # pylint: disable=not-callable
+    totalgroups = dbsession.query(func.count(Group.objectId)).scalar()
+    totaldevices = dbsession.query(func.count(Device.id)).scalar()
+    if totalgroups > MAX_GROUPS:
+        print('Gathered {0} groups, switching to 3-phase approach for efficiency'.format(totalgroups))
+    async with aiohttp.ClientSession() as ahsession:
+        
+        if totalgroups > MAX_GROUPS:
+            print('Starting data gathering phase 2 of 3 (collecting properties and relationships)')
+        else:
+            print('Starting data gathering phase 2 of 2 (collecting properties and relationships)')
+        dumper.ahsession = ahsession
+        # If we have a lot of groups, dump them separately
+        if totalgroups <= MAX_GROUPS:
+            tasks.append(dumper.dump_links('groups', 'members', Group, mapping=group_mapping))
+            tasks.append(dumper.dump_links('groups', 'owners', Group, mapping=group_owner_mapping))
+            # tasks.append(dumper.dump_links('administrativeUnits', 'members', AdministrativeUnit, mapping=au_mapping))
+            tasks.append(dumper.dump_object_expansion('devices', Device, 'registeredOwners', 'owner', User))
+        tasks.append(dumper.dump_links('directoryRoles', 'members', DirectoryRole, mapping=role_mapping))
+        tasks.append(dumper.dump_linked_objects('servicePrincipals', 'appRoleAssignedTo', ServicePrincipal, AppRoleAssignmentto, ignore_duplicates=True))
+        tasks.append(dumper.dump_linked_objects('servicePrincipals', 'appRoleAssignments', ServicePrincipal, AppRoleAssignment, ignore_duplicates=True))
+        tasks.append(dumper.dump_object_expansion('servicePrincipals', ServicePrincipal, 'owners', 'owner', User, mapping=owner_mapping))
+        tasks.append(dumper.dump_object_expansion('applications', Application, 'owners', 'owner', User, mapping=owner_mapping))
+        tasks.append(dumper.dump_custom_role_members(RoleAssignment))
+        tasks.append(dumper.dump_eligible_role_members(EligibleRoleAssignment))
+        if args.mfa:
+            tasks.append(dumper.dump_mfa(User, method=ahsession.get))
+        # tasks.append(dumper.dump_each(ServicePrincipal, 'applicationRefs', ApplicationRef)) # Doesn't look like new graph has a direct alternative API available
+        tasks.append(dumper.dump_keycredentials('servicePrincipals', ServicePrincipal))
+        tasks.append(dumper.dump_keycredentials('applications', Application))
+        await asyncio.gather(*tasks)
+    dbsession.commit()
+
+    tasks = []
+    if totalgroups > MAX_GROUPS:
+        print('Starting data gathering phase 3 of 3 (collecting group memberships and device owners)')
+        async with aiohttp.ClientSession() as ahsession:
+           
+            dumper.ahsession = ahsession
+            queue = asyncio.Queue(maxsize=100)
+            # Start the workers
+            workers = []
+            for i in range(100):
+                workers.append(asyncio.ensure_future(queue_processor(queue)))
+
+            tasks.append(dumper.dump_links_with_queue(queue, 'devices', 'registeredOwners', Device, mapping=device_link_mapping))
+            tasks.append(dumper.dump_links_with_queue(queue, 'groups', 'members', Group, mapping=group_link_mapping))
+            tasks.append(dumper.dump_links_with_queue(queue, 'groups', 'owners', Group, mapping=group_owner_link_mapping))
+            # tasks.append(dumper.dump_links_with_queue(queue, 'administrativeUnits', 'members', AdministrativeUnit, mapping=au_link_mapping))
+
+            await asyncio.gather(*tasks)
+            await queue.join()
+            for worker_task in workers:
+                worker_task.cancel()
+
+    dbsession.commit()
+    dbsession.close()
 
 # def getargs(gather_parser):
 #     gather_parser.add_argument('-d', '--database', action='store',

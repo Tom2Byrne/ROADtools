@@ -332,8 +332,8 @@ class Group(Base, SerializeMixin):
 
     memberContacts = relationship("Contact", secondary=lnk_group_member_contact, back_populates="memberOf")
     memberDevices = relationship("Device", secondary=lnk_group_member_device, back_populates="memberOf")
-    memberGroups = relationship("Group", secondary=lnk_group_member_group, primaryjoin=id==lnk_group_member_group.c.Group, secondaryjoin=id==lnk_group_member_group.c.childGroup, back_populates="memberOf")
-    memberOf = relationship("Group", secondary=lnk_group_member_group, primaryjoin=id==lnk_group_member_group.c.childGroup, secondaryjoin=id==lnk_group_member_group.c.Group, back_populates="memberGroups")
+    memberGroups = relationship("Group", secondary=lnk_group_member_group, primaryjoin=objectId==lnk_group_member_group.c.Group, secondaryjoin=objectId==lnk_group_member_group.c.childGroup, back_populates="memberOf")
+    memberOf = relationship("Group", secondary=lnk_group_member_group, primaryjoin=objectId==lnk_group_member_group.c.childGroup, secondaryjoin=objectId==lnk_group_member_group.c.Group, back_populates="memberGroups")
     memberOfAu = relationship("AdministrativeUnit", secondary=lnk_au_member_group, back_populates="memberGroups")
     memberOfRole = relationship("DirectoryRole", secondary=lnk_role_member_group, back_populates="memberGroups")
     memberServicePrincipals = relationship("ServicePrincipal", secondary=lnk_group_member_serviceprincipal, back_populates="memberOf")

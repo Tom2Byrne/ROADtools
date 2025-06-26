@@ -146,7 +146,7 @@ async def dumpsingle(url, method):
     await ratelimit()
     try:
         urlcounter += 1
-        async with method(url, headers=headers) as res:
+        async with method(url, headers=headers, **proxy_config, verify_ssl=disable_verify_switch) as res:
             if res.status == 429:
                 if tokencounter > 0:
                     tokencounter -= 10*MAX_REQ_PER_SEC
