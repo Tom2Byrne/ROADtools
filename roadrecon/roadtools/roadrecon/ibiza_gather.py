@@ -370,7 +370,6 @@ class DataDumper(object):
         cache = []
         async for obj in dumphelper(url, method=method):
             policy_id = obj.get("policyId")
-            print(policy_id)
             if policy_id:
                 detail_url = 'https://main.iam.ad.ext.azure.com/api/Policies/%s' % (policy_id)
                 policy_details = await dumpsingle(detail_url, method=method) # TO DO - Make faster
