@@ -259,7 +259,7 @@ tables = [
     (DirectoryRole, ['role_member_user', 'role_member_serviceprincipal', 'role_member_group'], []),
     (TenantDetail, [], []),
     (ApplicationRef, [], []),
-    (ExtensionProperty, [], []),
+    # (ExtensionProperty, [], []),
     (Contact, [], ['group_member_contact']),
     (Policy, [], []),
     (RoleDefinition, ['role_assignment_eligible', 'role_assignment_active'], []),
@@ -269,7 +269,7 @@ tables = [
     (DirectorySetting, [], []),
     (AdministrativeUnit, ['au_member_group', 'au_member_user', 'au_member_device'], [])
 ]
-with open('metadef/database.py', 'w') as outf:
+with open('metadef/msgraph_database.py', 'w') as outf:
     outf.write(header)
     for relname, reldata in relations.items():
         if relname == 'role_assignment_active' or relname == 'role_assignment_eligible':

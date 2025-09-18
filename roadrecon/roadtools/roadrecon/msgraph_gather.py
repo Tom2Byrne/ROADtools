@@ -245,7 +245,6 @@ class DataDumper(object):
         if method is None:
             method = self.ahsession.get
         url = 'https://graph.microsoft.com/v1.0/%s' % (objecttype)
-        # print(url)
         cache = []
         async for obj in dumphelper(url, method=method):
             cache.append(obj)
@@ -259,7 +258,6 @@ class DataDumper(object):
     async def dump_l_to_db(self, url, method, mapping, linkname, childtbl, parent):
         global groupcounter, totalgroups, devicecounter, totaldevices
         i = 0
-        # print("URL FIRST:", url)
         # Essentially this takes a URL sends a request and recieves a response immediately and then tries to parse the response with id, objclass = obj['url'].split('/')[-2:] - Previously AAD graph returned an object with a load of URLs which is why this logic is here to get the URLs for the linked objects
         async for obj in dumphelper(url, method=method):
             # print(url)

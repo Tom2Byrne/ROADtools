@@ -26,8 +26,8 @@ export class GroupsdialogInitComponent implements OnInit {
           data: data.user
         });
         dialogRef.afterClosed().subscribe(result => {
-          console.log(this.router.url);
-          console.log(this.myurl);
+          // console.log(this.router.url);
+          // console.log(this.myurl);
           if(this.router.url == this.myurl){
             this.location.back();
           }

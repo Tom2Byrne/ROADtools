@@ -575,6 +575,8 @@ def get_approles_by_principal(pid):
 def get_oauth2permissions():
     oauth2permissions = []
     for permgrant in db.session.query(OAuth2PermissionGrant).all():
+        if permgrant is None:
+            abort(204)
         grant = {}
         rsp = db.session.get(ServicePrincipal, permgrant.clientId)
         if permgrant.consentType == 'Principal':
