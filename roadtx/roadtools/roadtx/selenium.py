@@ -16,7 +16,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.common import exceptions
-from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
+from selenium.common.exceptions import TimeoutException, StaleElementReferenceException, \
+    NoSuchElementException, ElementClickInterceptedException, ElementNotInteractableException
 import pyotp
 
 # Decorator for selenium functions
@@ -175,6 +176,8 @@ class SeleniumAuthentication():
         if filepath.endswith('.xml'):
             reader = HackyKeePassFileReader(filepath, password, plain=True)
         else:
+            if not password:
+                raise AuthenticationException('No password was specified to decrypt the KeePass database')
             reader = HackyKeePassFileReader(filepath, password, plain=False)
         entry = reader.get_entry(identity)
         if not entry:
@@ -226,7 +229,25 @@ class SeleniumAuthentication():
 
         # Quick check of mfa not needed
         try:
-            WebDriverWait(driver, 2).until(lambda d: '?code=' in d.current_url)
+            try:
+                WebDriverWait(driver, 1).until(lambda d: d.find_element(By.ID, "idonotexist"))
+            except TimeoutException:
+                pass
+            els = WebDriverWait(driver, 2).until(lambda d: '?code=' in d.current_url or d.find_element(By.ID, "idSIButton9"))
+            if not '?code=' in driver.current_url:
+                # handle KMSI first
+                try:
+                    WebDriverWait(driver, 1).until(lambda d: d.find_element(By.ID, "idonotexist"))
+                except TimeoutException:
+                    pass
+                try:
+                    driver.find_element(By.ID, "idSIButton9").click()
+                except (ElementClickInterceptedException, ElementNotInteractableException):
+                    pass
+                try:
+                    WebDriverWait(driver, 2).until(lambda d: '?code=' in d.current_url)
+                except NoSuchElementException:
+                    raise TimeoutException
             res = urlparse(driver.current_url)
             params = parse_qs(res.query)
             code = params['code'][0]
@@ -275,7 +296,11 @@ class SeleniumAuthentication():
                     raise AuthenticationException('Could not complete device code auth within the time limit (button not found: idSIButton9)')
         else:
             try:
-                WebDriverWait(driver, 1200).until(lambda d: '?code=' in d.current_url)
+                els = WebDriverWait(driver, 1200).until(lambda d: '?code=' in d.current_url or d.find_element(By.ID, "idSIButton9"))
+                if not '?code=' in driver.current_url:
+                    # Handle KMSI
+                    els.click()
+                    WebDriverWait(driver, 1200).until(lambda d: '?code=' in d.current_url)
                 res = urlparse(driver.current_url)
                 params = parse_qs(res.query)
                 code = params['code'][0]

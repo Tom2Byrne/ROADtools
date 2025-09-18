@@ -24,6 +24,7 @@ def main():
     parser.add_argument('-p', '--proxy', action='store', help="Proxy requests through a proxy (format: proxyip:port). Ignores TLS validation if specified, unless --secure is used.")
     parser.add_argument('-pt', '--proxy-type', action='store', default="http", help="Proxy type to use. Supported: http / socks4 / socks5. Default: http")
     parser.add_argument('-s', '--secure', action='store_true', help="Enforce certificate validation even if using a proxy")
+    parser.add_argument('-i', '--insecure', action='store_true', help="Do not validate certificates (insecure)")
 
     # Add subparsers for modules
     subparsers = parser.add_subparsers(dest='command')
@@ -70,6 +71,9 @@ def main():
     rttsauth_parser.add_argument('--origin',
                                  action='store',
                                  help='Origin header to use in refresh token redemption (for single page app flows)')
+    rttsauth_parser.add_argument('--autobroker',
+                                 action='store_true',
+                                 help='Find broker parameters in built-in first party apps automatically (for Nested App Auth)')
     rttsauth_parser.add_argument('-bc',
                                  '--broker-client',
                                  action='store',
@@ -174,7 +178,7 @@ def main():
                                 help='Resource to authenticate to. Either a full URL or alias (list with roadtx listaliases)',
                                 default='https://graph.windows.net')
     prtauth_parser.add_argument('-ru', '--redirect-url', action='store', metavar='URL',
-                                 help='Custom redirect URL used when authenticating (default: ms-appx-web://Microsoft.AAD.BrokerPlugin/<clientid>)')
+                                 help='Custom redirect URL used when authenticating (default: find automatically for the client ID given)')
     prtauth_parser.add_argument('-f', '--prt-file', default="roadtx.prt", action='store', metavar='FILE', help='PRT storage file (default: roadtx.prt)')
     prtauth_parser.add_argument('--prt',
                                 action='store',
@@ -241,6 +245,7 @@ def main():
     appauth_parser.add_argument('--cert-pfx', action='store', metavar='file', help='Application cert and key as PFX file')
     appauth_parser.add_argument('--pfx-pass', action='store', metavar='password', help='PFX file password')
     appauth_parser.add_argument('--pfx-base64', action='store', metavar='BASE64', help='PFX file as base64 string')
+    appauth_parser.add_argument('--assertion', action='store', metavar='JWT', help='Signed JWT assertion for cert based auth')
     appauth_parser.add_argument('--cae',
                                 action='store_true',
                                 help='Request Continuous Access Evaluation tokens (requires use of scope parameter instead of resource)')
@@ -374,7 +379,7 @@ def main():
                                 help='Resource to authenticate to. Either a full URL or alias (list with roadtx listaliases)',
                                 default='https://graph.windows.net')
     devauth_parser.add_argument('-ru', '--redirect-url', action='store', metavar='URL',
-                                 help='Custom redirect URL used when authenticating (default: ms-appx-web://Microsoft.AAD.BrokerPlugin/<clientid>)')
+                                 help='Custom redirect URL used when authenticating (default: find automatically for the client ID given)')
     devauth_parser.add_argument('--tokenfile',
                                 action='store',
                                 help='File to store the credentials (default: .roadtools_auth)',
@@ -915,6 +920,18 @@ def main():
                                   action='store',
                                   help='Primary Refresh Token session key (as hex key)')
 
+    # Graph request
+    graphrequest_parser = subparsers.add_parser('graphrequest', help='Send request to Microsoft Graph or other REST APIs')
+    graphrequest_parser.add_argument('--access-token', action='store', help='Access token for Microsoft Graph. If not specified, taken from .roadtools_auth')
+    graphrequest_parser.add_argument('-ua', '--user-agent', action='store',
+                                     help='Custom user agent to use. Default: python-requests user agent is used')
+    graphrequest_parser.add_argument('-f', '--tokenfile', action='store', help='File to read the token from (default: .roadtools_auth)', default='.roadtools_auth')
+    graphrequest_parser.add_argument('-m', '--method', action='store', help='HTTP method to use (default: GET)', default='GET')
+    graphrequest_parser.add_argument('-i', '--ignore', action='store_true', help='Ignore audience mismatches in the token')
+    graphrequest_parser.add_argument('-d', '--data', action='store', help='JSON data to send with the request (must be valid JSON)')
+    graphrequest_parser.add_argument('-df', '--datafile', action='store', help='File containing JSON data to send with the request')
+    graphrequest_parser.add_argument('url', action='store', help='URL to request')
+
     if len(sys.argv) < 2:
         parser.print_help()
         sys.exit(1)
@@ -923,12 +940,16 @@ def main():
     args = parser.parse_args()
     deviceauth = DeviceAuthentication(auth)
 
+    # Handle proxy
     if args.proxy:
         auth.proxies = deviceauth.proxies = {
             'https': f'{args.proxy_type}://{args.proxy}'
         }
         if not args.secure:
             auth.verify = deviceauth.verify = False
+    # Disable TLS cert validation
+    if args.insecure:
+        auth.verify = deviceauth.verify = False
 
     if args.command in ('auth', 'gettokens', 'gettoken'):
         auth.parse_args(args)
@@ -959,7 +980,6 @@ def main():
             except FileNotFoundError:
                 print('This command requires the .roadtools_auth file, which was not found. Use the gettokens command to supply a refresh token manually.')
                 return
-        auth.set_client_id(tokenobject['_clientId'])
         auth.set_resource_uri(args.resource)
         auth.set_user_agent(args.user_agent)
         auth.set_scope(args.scope)
@@ -975,8 +995,57 @@ def main():
             auth.tenant = tokenobject['tenantId']
         if args.client:
             auth.set_client_id(args.client)
+        elif '_clientId' in tokenobject:
+            auth.set_client_id(tokenobject['_clientId'])
+        else:
+            print('Could not determine client ID of refresh token, please specify with -c')
+            return
         if args.cae:
             auth.use_cae = args.cae
+        if args.autobroker:
+            # Automatic broker app selection
+
+            # Load scope data - contains redirect URLs for the broker
+            current_dir = os.path.abspath(os.path.dirname(__file__))
+            datafile = os.path.join(current_dir, 'firstpartyscopes.json')
+            with codecs.open(datafile,'r','utf-8') as infile:
+                data = json.load(infile)
+            if not args.client:
+                print('Client ID is required for autobroker flag, please specify with -c')
+                return
+            if args.broker_client:
+                originclient = auth.lookup_client_id(args.broker_client)
+            elif '_clientId' in tokenobject:
+                originclient = auth.lookup_client_id(tokenobject['_clientId'])
+            else:
+                print('Could not determine client, guessing the client based on redirect URL found')
+                originclient = 'guess'
+            try:
+                targetclient = data['apps'][auth.lookup_client_id(args.client)]
+            except KeyError:
+                print(f'Unknown client with ID {args.client} is not found in roadtx built-in client list. Please specify broker parameters manually.')
+                return
+            validru = False
+            for redirect_url in targetclient['redirect_uris']:
+                if originclient == 'guess' and redirect_url.startswith('brk-'):
+                    validru = True
+                    finalru = redirect_url
+                    break
+                if redirect_url.startswith(f'brk-{originclient}'):
+                    validru = True
+                    finalru = redirect_url
+                    break
+            if not validru:
+                print(f'Could not find a valid broker redirect URL on this client matching the original client ID {originclient}')
+                return
+            parsed = urlparse(finalru)
+            if originclient == 'guess':
+                # We know the client ID now
+                originclient = parsed.scheme.lower()[4:]
+            # Copy correct origin
+            auth.set_origin_value(f'https://{parsed.hostname}')
+            args.broker_redirect_url = finalru
+            args.broker_client = originclient
         if not args.tokens_stdout:
             if args.scope:
                 print(f'Requesting token with scope {auth.scope}')
@@ -994,6 +1063,9 @@ def main():
                 auth.authenticate_with_refresh_native_v2(tokenobject['refreshToken'], client_secret=args.password, additionaldata=additionaldata)
             else:
                 auth.authenticate_with_refresh_native(tokenobject['refreshToken'], client_secret=args.password, additionaldata=additionaldata)
+            # Save original client ID if doing broker auth
+            if args.broker_client:
+                auth.tokendata['_clientId'] = args.broker_client
             auth.save_tokens(args)
         except AuthenticationException as ex:
             try:
@@ -1022,6 +1094,11 @@ def main():
                 auth.authenticate_as_app_native_v2(client_secret=args.password)
             else:
                 auth.authenticate_as_app_native(client_secret=args.password)
+        elif args.assertion:
+            if args.scope:
+                auth.authenticate_as_app_native_v2(assertion=args.assertion)
+            else:
+                auth.authenticate_as_app_native(assertion=args.assertion)
         else:
             if not auth.loadappcert(args.cert_pem, args.key_pem, args.cert_pfx, args.pfx_pass, args.pfx_base64):
                 return
@@ -1211,7 +1288,13 @@ def main():
         auth.set_user_agent(args.user_agent)
         if args.tenant:
             auth.tenant = args.tenant
-        tokenreply = deviceauth.get_token_for_device(args.client, args.resource, redirect_uri=args.redirect_url)
+        auth.set_client_id(args.client)
+        auth.set_resource_uri(args.resource)
+        if args.redirect_url:
+            redirect_url = args.redirect_url
+        else:
+            redirect_url = find_redirurl_for_client(auth.client_id, interactive=False, broker=True)
+        tokenreply = deviceauth.get_token_for_device(auth.client_id, auth.resource_uri, redirect_uri=redirect_url)
         auth.outfile = args.tokenfile
         auth.tokendata = auth.tokenreply_to_tokendata(tokenreply)
         auth.save_tokens(args)
@@ -1914,6 +1997,58 @@ def main():
         except KeyboardInterrupt:
             return
         return
+    elif args.command == 'graphrequest':
+        if args.access_token:
+            tokenobject, tokendata = auth.parse_accesstoken(args.access_token)
+        else:
+            try:
+                with codecs.open(args.tokenfile, 'r', 'utf-8') as infile:
+                    tokenobject = json.load(infile)
+                _, tokendata = auth.parse_accesstoken(tokenobject['accessToken'])
+            except FileNotFoundError:
+                print('No auth data found. Ether supply an access token with --access-token or make sure a token is present on disk in .roadtools_auth')
+                return
+        auth.set_user_agent(args.user_agent)
+        if not args.url.lower().startswith('https://') and not args.url.lower().startswith('https://graph.microsoft.com'):
+            args.url = 'https://graph.microsoft.com' + args.url
+        # Validate token audience if we talk to MS Graph
+        parsed = urlparse(args.url)
+        if not args.ignore and parsed.hostname.lower() == 'graph.microsoft.com' and tokendata['aud'] != '00000003-0000-0ff1-ce00-000000000000' and not tokendata['aud'].endswith('graph.microsoft.com') and not tokendata['aud'].endswith('graph.microsoft.com/'):
+            print(f"Wrong token audience, got {tokendata['aud']} but expected an audience ending with graph.microsoft.com")
+            print("Make sure to request a token with -r https://graph.microsoft.com")
+            return
+        headers = {
+            'Authorization': f'Bearer {tokenobject["accessToken"]}'
+        }
+        if args.datafile:
+            try:
+                with codecs.open(args.datafile, 'r', 'utf-8') as infile:
+                    data = json.load(infile)
+            except FileNotFoundError:
+                print('The datafile specified was not found')
+                return
+        elif args.data:
+            try:
+                data = json.loads(args.data)
+            except json.decoder.JSONDecodeError as ex:
+                print(f'Invalid JSON data provided: {str(ex)}')
+                return
+        if args.method.upper() == 'GET':
+            response = auth.requests_get(args.url, headers=headers)
+        elif args.method.upper() == 'POST':
+            response = auth.requests_post(args.url, headers=headers, json=data)
+        elif args.method.upper() == 'PATCH':
+            response = auth.requests_patch(args.url, headers=headers, json=data)
+        elif args.method.upper() == 'PUT':
+            response = auth.requests_put(args.url, headers=headers, json=data)
+        elif args.method.upper() == 'DELETE':
+            response = auth.requests_delete(args.url, headers=headers)
+        if response.status_code != 200:
+            print(response.status_code)
+        try:
+            print(json.dumps(response.json(), indent=4))
+        except json.decoder.JSONDecodeError:
+            print(response.text)
 
 if __name__ == '__main__':
     main()

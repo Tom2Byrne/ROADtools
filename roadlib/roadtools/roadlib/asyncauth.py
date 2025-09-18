@@ -428,6 +428,21 @@ class AsyncAuthentication(Authentication):
         self.tokendata = self.tokenreply_to_tokendata(tokenreply)
         return self.tokendata
 
+    async def get_acs_actortoken(self, resourceurl, assertion):
+        """
+        Request token with ACS
+        """
+        data = {
+            'grant_type': 'http://oauth.net/grant_type/jwt/1.0/bearer',
+            'assertion': assertion,
+            'resource': f'{resourceurl}@{self.tenant}'
+        }
+
+        res = await self.requests_post(f'https://accounts.accesscontrol.windows.net/{self.tenant}/tokens/OAuth/2', data=data)
+        if res.status != 200:
+            raise AuthenticationException(await res.text())
+        tokendata = await res.json()
+        return tokendata
 
     async def authenticate_with_refresh_native(self, refresh_token, client_secret=None, additionaldata=None, returnreply=False):
         """
@@ -972,6 +987,30 @@ class AsyncAuthentication(Authentication):
             headers['Origin'] = self.origin
             kwargs['headers'] = headers
         async with self.ahsession.put(*args, **kwargs) as response:
+            await response.read()
+        self.requestcounter += 1
+        return response
+
+    async def requests_patch(self, *args, **kwargs):
+        '''
+        Wrapper around aiohttp.post to set all the options uniformly
+        '''
+        if not self.ahsession:
+            # Don't save cookies
+            jar = aiohttp.DummyCookieJar()
+            self.ahsession = aiohttp.ClientSession(cookie_jar=jar)
+        if self.proxies and 'https' in self.proxies:
+            kwargs['proxy'] = self.proxies['https']
+        kwargs['ssl'] = self.verify
+        if self.user_agent:
+            headers = kwargs.get('headers',{})
+            headers['User-Agent'] = self.user_agent
+            kwargs['headers'] = headers
+        if self.origin:
+            headers = kwargs.get('headers',{})
+            headers['Origin'] = self.origin
+            kwargs['headers'] = headers
+        async with self.ahsession.patch(*args, **kwargs) as response:
             await response.read()
         self.requestcounter += 1
         return response

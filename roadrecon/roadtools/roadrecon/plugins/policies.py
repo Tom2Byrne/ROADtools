@@ -229,22 +229,26 @@ class AccessPoliciesPlugin():
             if ctype == 'Acrs':
                 ot += 'Action: '
                 ot += ', '.join([escape(action) for action in clist])
+            elif ctype == 'NetworkAccess':
+                # clist should be a dict, for example {"TrafficProfiles":"Internet"}
+                ot += 'Network access: '
+                ot += ', '.join([f"{escape(action)}: {escape(target)}" for action, target in clist.items()])
             else:
                 if 'All' in clist:
-                    ot += 'All applications'
+                    ot += 'All resources'
                     break
                 if 'None' in clist:
                     ot += 'None'
                     break
                 if 'Office365' in clist:
-                    ot += 'All Office 365 applications'
+                    ot += 'All Office 365 applications '
                 if 'MicrosoftAdminPortals' in clist:
-                    ot += 'All Microsoft Admin Portals'
+                    ot += 'All Microsoft Admin Portals '
                 objects = self._get_application(clist)
                 if objects is not None: 
                     if len(objects) > 0:
                         if ctype == 'Applications':
-                            ot += 'Applications: '
+                            ot += 'Resources: '
                             ot += ', '.join([escape(uobj.displayName) for uobj in objects])
         return ot
 
@@ -491,9 +495,25 @@ class AccessPoliciesPlugin():
     def _parse_sessioncontrols(self, cond):
         if not 'SessionControls' in cond:
             return ''
-        ucond = cond['SessionControls']
+        ucond = []
+        for condition in cond['SessionControls']:
+            if condition == 'SignInFrequency':
+                siftype = cond.get('SignInFrequencyType')
+                if not siftype:
+                    ucond.append('SignInFrequency (Unknown setting)')
+                elif siftype == 30:
+                    ucond.append('SignInFrequency (Every time)')
+                elif siftype == 10:
+                    sifduration = cond.get('SignInFrequencyTimeSpan', '')
+                    ucond.append(f'SignInFrequency (Every {sifduration})')
+                else:
+                    ucond.append(f'SignInFrequency (Unknown SIF type {siftype})')
+            elif condition == 'PersistentBrowserSessionMode':
+                pbmode = cond.get('PersistentBrowserSessionMode')
+                ucond.append(f'PersistentBrowserSession: {pbmode}')
+            else:
+                ucond.append(condition)
         return ', '.join(ucond)
-
 
     def _parse_compressed_cidr(self,detail):
         if not 'CompressedCidrIpRanges' in detail:
@@ -521,9 +541,9 @@ class AccessPoliciesPlugin():
                 print(policy.objectId)
             detail = json.loads(policy.policyDetail[0])
             if detail['State'] == 'Reporting':
-                out['name'] += ' (<strong>Report only</strong>)'
+                out['name'] += ' (<i>Report only</i>)'
             elif detail['State'] != 'Enabled':
-                out['name'] += ' (<strong>Disabled</strong>)'
+                out['name'] += ' (<i>Disabled</i>)'
             if should_print:
                 pp.pprint(detail)
             try:
@@ -535,6 +555,7 @@ class AccessPoliciesPlugin():
                     print('Invalid policy - no conditions')
                 continue
             out['who'] = self._parse_who(conditions)
+            out['status'] = escape(detail['State'])
             out['applications'] = self._parse_application(conditions)
             out['authflows'] = self._parse_authflows(conditions)
             out['platforms'] = self._parse_platform(conditions)
@@ -612,7 +633,9 @@ class AccessPoliciesPlugin():
         for out in ol:
             table = '<thead><tr><td colspan="2">{0}</td></tr></thead><tbody>'.format(out['name'])
             table += '<tr><td>Applies to</td><td>{0}</td></tr>'.format(out['who'])
-            table += '<tr><td>Applications</td><td>{0}</td></tr>'.format(out['applications'])
+            if out['status'] != 'Enabled':
+                table += '<tr><td>Policy state</td><td>{0}</td></tr>'.format(out['status'])
+            table += '<tr><td>Resources</td><td>{0}</td></tr>'.format(out['applications'])
             if out['platforms'] != '':
                 table += '<tr><td>On platforms</td><td>{0}</td></tr>'.format(out['platforms'])
             if out['devices'] != '':

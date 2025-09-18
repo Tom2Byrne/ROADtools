@@ -618,7 +618,7 @@ class Authentication():
         self.tokendata = self.tokenreply_to_tokendata(tokenreply)
         return self.tokendata
 
-    def generate_app_assertion(self, use_v2=True):
+    def generate_app_assertion(self, use_v2=True, use_x5c=False):
         data = self.appcertificate.public_bytes(
             serialization.Encoding.DER
         )
@@ -628,6 +628,8 @@ class Authentication():
         headers = {
             "x5t": base64.urlsafe_b64encode(thumbprint).decode('utf-8'),
         }
+        if use_x5c:
+            headers['x5c'] = [base64.b64encode(data).decode('utf-8')]
         if use_v2:
             suffix = '/oauth2/v2.0/token'
         else:
@@ -671,6 +673,45 @@ class Authentication():
             "sub": sub
         }
         return jwt.encode(payload, algorithm='RS256', key=self.appkeydata, headers=headers)
+
+    def generate_acs_assertion(self):
+        """
+        Generate assertion in the format that ACS expects
+        Requires certificate for app based auth to be loaded
+        """
+        data = self.appcertificate.public_bytes(
+            serialization.Encoding.DER
+        )
+        digest = hashes.Hash(hashes.SHA1())
+        digest.update(data)
+        thumbprint = digest.finalize()
+        headers = {
+            "x5t": base64.urlsafe_b64encode(thumbprint).decode('utf-8'),
+        }
+        payload = {
+            "iss": f"{self.client_id}@{self.tenant}",
+            "aud": f"00000001-0000-0000-c000-000000000000/accounts.accesscontrol.windows.net@{self.tenant}",
+            "iat": str(int(time.time())),
+            "nbf": str(int(time.time())),
+            "exp": str(int(time.time())+(300)),
+        }
+        return jwt.encode(payload, algorithm='RS256', key=self.appkeydata, headers=headers)
+
+    def get_acs_actortoken(self, resourceurl, assertion):
+        """
+        Request token with ACS
+        """
+        data = {
+            'grant_type': 'http://oauth.net/grant_type/jwt/1.0/bearer',
+            'assertion': assertion,
+            'resource': f'{resourceurl}@{self.tenant}'
+        }
+
+        res = self.requests_post(f'https://accounts.accesscontrol.windows.net/{self.tenant}/tokens/OAuth/2', data=data)
+        if res.status_code != 200:
+            raise AuthenticationException(res.text)
+        tokendata = res.json()
+        return tokendata
 
     def authenticate_with_refresh(self, oldtokendata):
         """
@@ -1731,6 +1772,50 @@ class Authentication():
             headers['Origin'] = self.origin
             kwargs['headers'] = headers
         return requests.post(*args, timeout=30.0, **kwargs)
+
+    def requests_put(self, *args, **kwargs):
+        '''
+        Wrapper around requests.post to set all the options uniformly
+        '''
+        kwargs['proxies'] = self.proxies
+        kwargs['verify'] = self.verify
+        if self.user_agent:
+            headers = kwargs.get('headers',{})
+            headers['User-Agent'] = self.user_agent
+            kwargs['headers'] = headers
+        if self.origin:
+            headers = kwargs.get('headers',{})
+            headers['Origin'] = self.origin
+            kwargs['headers'] = headers
+        return requests.put(*args, timeout=30.0, **kwargs)
+
+    def requests_patch(self, *args, **kwargs):
+        '''
+        Wrapper around requests.post to set all the options uniformly
+        '''
+        kwargs['proxies'] = self.proxies
+        kwargs['verify'] = self.verify
+        if self.user_agent:
+            headers = kwargs.get('headers',{})
+            headers['User-Agent'] = self.user_agent
+            kwargs['headers'] = headers
+        if self.origin:
+            headers = kwargs.get('headers',{})
+            headers['Origin'] = self.origin
+            kwargs['headers'] = headers
+        return requests.patch(*args, timeout=30.0, **kwargs)
+    
+    def requests_delete(self, *args, **kwargs):
+        '''
+        Wrapper around requests.delete to set all the options uniformly
+        '''
+        kwargs['proxies'] = self.proxies
+        kwargs['verify'] = self.verify
+        if self.user_agent:
+            headers = kwargs.get('headers',{})
+            headers['User-Agent'] = self.user_agent
+            kwargs['headers'] = headers
+        return requests.delete(*args, timeout=30.0, **kwargs)
 
     def parse_args(self, args):
         self.username = args.username
